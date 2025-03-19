@@ -3,9 +3,27 @@
 #include <event2/event.h>
 #include <event2/util.h>
 #include <unistd.h>
+#include <hiredis/hiredis.h>
 
 // 定時間隔秒數
 gint64 interval_seconds = 60;
+// 連接超時秒數
+gint64 connect_timeout_seconds = 5;
+// Redis 連接地址
+gchar* redis_host = nullptr;
+// Redis 連接端口
+gint redis_port = 0;
+
+static GOptionEntry entries[] = {
+    {"redis-host", 'h', 0, G_OPTION_ARG_STRING, &redis_host, "Redis host (required)", "HOST"},
+    {"redis-port", 'p', 0, G_OPTION_ARG_INT, &redis_port, "Redis port (default: 6379)", "PORT"},
+    {"interval", 'i', 0, G_OPTION_ARG_INT, &interval_seconds, "Interval in seconds (default: 60)", "SECONDS"},
+    {
+        "timeout", 'o', 0, G_OPTION_ARG_INT, &connect_timeout_seconds, "Connect timeout in seconds (default: 5)",
+        "SECONDS"
+    },
+    {nullptr}
+};
 
 /**
  * 定时器回调函数
@@ -19,8 +37,30 @@ void timer_callback(const evutil_socket_t fd, const short event, void* arg)
     (void)event; // 未使用
     g_print("Timer callback called.\n");
 
+    // 建立 Redis 連接
+    const struct timeval timeout = {connect_timeout_seconds, 0};
+    redisContext* c = redisConnectWithTimeout(redis_host, redis_port, timeout);
+
+    // 如果連接失敗，則輸出錯誤信息
+    if (c == nullptr || c->err)
+    {
+        if (c)
+        {
+            g_printerr("Redis connection error: %s\n", c->errstr);
+            redisFree(c);
+        }
+        else
+        {
+            g_printerr("Redis connection error: can't allocate redis context\n");
+        }
+    }
+
+    g_printf("Redis connection success\n");
+    // 釋放 Redis 連接
+    redisFree(c);
+
     const auto ev = (struct event*)arg;
-    const struct timeval interval = {interval_seconds, 0}; // 5秒后再次触发
+    const struct timeval interval = {interval_seconds, 0};
     evtimer_add(ev, &interval);
 }
 
@@ -64,14 +104,9 @@ int run_loop()
     return 0;
 }
 
-int main(int argc, char* argv[])
+// **初始化函數**
+void init_global_params(int argc, char* argv[])
 {
-    // 定义命令行参数
-    const GOptionEntry entries[] = {
-        {"interval", 'i', 0, G_OPTION_ARG_INT, &interval_seconds, "Interval in seconds", "10"},
-        {nullptr}
-    };
-
     // 定义错误信息
     GError* error = nullptr;
 
@@ -95,11 +130,27 @@ int main(int argc, char* argv[])
     {
         g_print("Option parsing failed: %s\n", error->message);
         g_error_free(error);
-        return 1;
+        exit(1);
     }
 
     // 釋放 GOptionContext
     g_option_context_free(context);
 
-    return run_loop();
+    // **檢查必填參數**
+    if (redis_host == nullptr)
+    {
+        g_printerr("Error: --redis-host is required\n");
+        exit(1);
+    }
+}
+
+int main(int argc, char* argv[])
+{
+    // 初始化全局參數
+    init_global_params(argc, argv);
+    // 運行事件循環
+    const int res = run_loop();
+    // 釋放資源
+    g_free(redis_host);
+    return res;
 }
