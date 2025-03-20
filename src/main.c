@@ -5,6 +5,15 @@
 #include <unistd.h>
 #include <hiredis/hiredis.h>
 
+// 配置文件路徑
+gchar* config_file = nullptr;
+
+// 命令行選項
+static GOptionEntry entries[] = {
+    {"config_file", 'c', 0, G_OPTION_ARG_STRING, &config_file, "Configuration file path", nullptr},
+    {nullptr}
+};
+
 // 定時間隔秒數
 gint64 interval_seconds = 60;
 // 連接超時秒數
@@ -13,17 +22,6 @@ gint64 connect_timeout_seconds = 5;
 gchar* redis_host = nullptr;
 // Redis 連接端口
 gint redis_port = 0;
-
-static GOptionEntry entries[] = {
-    {"redis-host", 'h', 0, G_OPTION_ARG_STRING, &redis_host, "Redis host (required)", "HOST"},
-    {"redis-port", 'p', 0, G_OPTION_ARG_INT, &redis_port, "Redis port (default: 6379)", "PORT"},
-    {"interval", 'i', 0, G_OPTION_ARG_INT, &interval_seconds, "Interval in seconds (default: 60)", "SECONDS"},
-    {
-        "timeout", 'o', 0, G_OPTION_ARG_INT, &connect_timeout_seconds, "Connect timeout in seconds (default: 5)",
-        "SECONDS"
-    },
-    {nullptr}
-};
 
 /**
  * 定时器回调函数
@@ -104,7 +102,11 @@ int run_loop()
     return 0;
 }
 
-// **初始化函數**
+/**
+ * 初始化函數
+ * @param argc 參數數量
+ * @param argv 參數列表
+ */
 void init_global_params(int argc, char* argv[])
 {
     // 定义错误信息
@@ -136,21 +138,91 @@ void init_global_params(int argc, char* argv[])
     // 釋放 GOptionContext
     g_option_context_free(context);
 
-    // **檢查必填參數**
-    if (redis_host == nullptr)
+    // 檢查必填參數
+    if (config_file == nullptr)
     {
-        g_printerr("Error: --redis-host is required\n");
+        g_printerr("Error: --config_file is required\n");
         exit(1);
     }
 }
+
+/**
+ * 解析配置文件
+ */
+void read_config()
+{
+    // 定義錯誤信息
+    GError* error = nullptr;
+    // 創建 KeyFile 對象
+    GKeyFile* keyfile = g_key_file_new();
+
+    // 加載 INI 文件
+    if (!g_key_file_load_from_file(keyfile, config_file, G_KEY_FILE_NONE, &error))
+    {
+        g_printerr("Error loading config file: %s\n", error->message);
+        g_error_free(error);
+        exit(1);
+    }
+
+    // 讀取檢查間隔秒數
+    error = nullptr;
+    interval_seconds = g_key_file_get_integer(keyfile, "General", "interval", &error);
+    // 如果讀取失敗，則使用默認值
+    if (error != nullptr)
+    {
+        g_printerr("Error reading interval: %s\n", error->message);
+        g_error_free(error);
+        interval_seconds = 60;
+    }
+
+    // 讀取連接超時秒數
+    error = nullptr;
+    connect_timeout_seconds = g_key_file_get_integer(keyfile, "General", "connect_timeout", &error);
+    // 如果讀取失敗，則使用默認值
+    if (error != nullptr)
+    {
+        g_printerr("Error reading connect_timeout: %s\n", error->message);
+        g_error_free(error);
+        connect_timeout_seconds = 5;
+    }
+
+    // 讀取redis連接地址
+    error = nullptr;
+    redis_host = g_key_file_get_string(keyfile, "General", "redis_host", &error);
+    // 如果讀取失敗，則退出程序
+    if (error != nullptr)
+    {
+        g_printerr("Error reading redis_host: %s\n", error->message);
+        g_error_free(error);
+        g_key_file_free(keyfile);
+        exit(1);
+    }
+
+    // 讀取redis連接端口
+    error = nullptr;
+    redis_port = g_key_file_get_integer(keyfile, "General", "redis_port", &error);
+    // 如果讀取失敗，則使用默認值
+    if (error != nullptr)
+    {
+        g_printerr("Error reading redis_port: %s\n", error->message);
+        g_error_free(error);
+        redis_port = 6379;
+    }
+
+    g_key_file_free(keyfile);
+}
+
 
 int main(int argc, char* argv[])
 {
     // 初始化全局參數
     init_global_params(argc, argv);
+    // 讀取配置文件
+    read_config();
     // 運行事件循環
     const int res = run_loop();
     // 釋放資源
+    g_free(config_file);
     g_free(redis_host);
     return res;
 }
