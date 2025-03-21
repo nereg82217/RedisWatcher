@@ -17,6 +17,12 @@ include_directories(${LIBEVENT_INCLUDE_DIRS})
 find_library(HIREDIS_LIB hiredis)
 include_directories(/usr/include/hiredis)
 
+# 查找 Jansson
+pkg_check_modules(JANSSON REQUIRED jansson)
+include_directories(${JANSSON_INCLUDE_DIRS})
+link_directories(${JANSSON_LIBRARY_DIRS})
+
+
 # 查找 Curl
 find_package(CURL REQUIRED)
 
@@ -31,5 +37,6 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         ${GLIB_LIBRARIES}
         ${LIBEVENT_LIBRARIES}
         ${HIREDIS_LIB}
+        ${JANSSON_LIBRARIES}
         CURL::libcurl
 )

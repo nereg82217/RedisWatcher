@@ -1,12 +1,8 @@
 #include <glib.h>
-#include <glib/gprintf.h>
-#include <event2/event.h>
-#include <event2/util.h>
-#include <unistd.h>
-#include <hiredis/hiredis.h>
 
 #include "redis.h"
 #include "email.h"
+#include "watcher.h"
 
 // 配置文件路徑
 gchar* config_file = nullptr;
@@ -17,131 +13,6 @@ static GOptionEntry entries[] = {
     {nullptr}
 };
 
-
-/**
- * 重啓 Docker 容器
- */
-void restart_docker_container()
-{
-    // TODO - 這裡應該重啓 Docker 容器
-}
-
-
-/**
- * 定时器回调函数
- * @param fd 文件描述符
- * @param event 事件类型
- * @param arg 回调函数参数
- */
-void timer_callback(const evutil_socket_t fd, const short event, void* arg)
-{
-    (void)fd; // 未使用
-    (void)event; // 未使用
-    g_print("Timer callback called.\n");
-
-    // 建立 Redis 連接
-    const struct timeval timeout = {r_config->connect_timeout_seconds, 0};
-    const auto c = redisConnectWithTimeout(r_config->redis_host, r_config->redis_port, timeout);
-
-    // 如果連接失敗，則輸出錯誤信息
-    if (c == nullptr || c->err)
-    {
-        if (c)
-        {
-            g_printerr("Redis connection error: %s\n", c->errstr);
-            redisFree(c);
-        }
-        else
-        {
-            g_printerr("Redis connection error: can't allocate redis context\n");
-        }
-    }
-
-    // 發送 AUTH 指令
-    redisReply* reply = redisCommand(c, "AUTH %s %s", r_config->redis_username, r_config->redis_password);
-    if (reply == nullptr)
-    {
-        printf("Sending AUTH failed, the connection may have been reset or Redis hangs\n");
-        goto finish;
-    }
-    // 清理
-    freeReplyObject(reply);
-
-    // 發送 PING 指令
-    reply = redisCommand(c, "PING");
-    if (reply == nullptr)
-    {
-        printf("Sending PING failed, the connection may have been reset or Redis hangs\n");
-        goto finish;
-    }
-
-    // 檢查回應
-    if (reply->type == REDIS_REPLY_STATUS && strcmp(reply->str, "PONG") == 0)
-    {
-        printf("Redis Respond to PING: %s\n", reply->str);
-    }
-    else
-    {
-        printf("Redis responds to exceptions: type=%d, str=%s\n", reply->type, reply->str);
-    }
-
-    g_printf("Redis connection success\n");
-
-finish:
-
-    if (reply)
-    {
-        freeReplyObject(reply);
-    }
-    if (c)
-    {
-        redisFree(c);
-    }
-
-    const auto ev = (struct event*)arg;
-    const struct timeval interval = {r_config->interval_seconds, 0};
-    evtimer_add(ev, &interval);
-}
-
-/**
- * 開始事件循環
- * @return 返回值
- */
-int run_loop()
-{
-    // 创建 libevent 基础结构
-    struct event_base* base = event_base_new();
-    if (!base)
-    {
-        g_printerr("Cannot create event base!\n");
-        return 1;
-    }
-
-    // 定义定时器事件
-    const struct timeval interval = {r_config->interval_seconds, 0};
-
-    // 創建定時器事件
-    struct event* timer_event = evtimer_new(base, timer_callback, event_self_cbarg());
-    if (!timer_event)
-    {
-        g_printerr("Cannot create timer event!\n");
-        event_base_free(base);
-        return 1;
-    }
-
-    // 启动定时器
-    evtimer_add(timer_event, &interval);
-    g_print("Timer started with interval %ld seconds.\n", r_config->interval_seconds);
-
-    // 运行事件循环
-    event_base_dispatch(base);
-
-    // 释放资源
-    event_free(timer_event);
-    event_base_free(base);
-
-    return 0;
-}
 
 /**
  * 初始化函數
@@ -210,6 +81,9 @@ void read_config()
     // 讀取 Email 配置
     if (!init_email_config(keyfile, error)) goto error;
 
+    // 讀取 Watcher 配置
+    if (!init_watcher_config(keyfile, error)) goto error;
+
     goto success;
 
 error:
@@ -217,6 +91,8 @@ error:
     destroy_redis_config();
     // 釋放 email 配置
     destroy_email_config();
+    // 釋放 watcher 配置
+    destroy_watcher_config();
     // 釋放 配置文件
     if (error != nullptr) g_error_free(error);;
     g_key_file_free(keyfile);
@@ -244,5 +120,7 @@ int main(int argc, char* argv[])
     destroy_redis_config();
     // 釋放 email 配置
     destroy_email_config();
+    // 釋放 watcher 配置
+    destroy_watcher_config();
     return res;
 }
