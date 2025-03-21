@@ -4,7 +4,9 @@
 #include <event2/util.h>
 #include <unistd.h>
 #include <hiredis/hiredis.h>
-#include <curl/curl.h>
+
+#include "redis.h"
+#include "email.h"
 
 // 配置文件路徑
 gchar* config_file = nullptr;
@@ -15,18 +17,15 @@ static GOptionEntry entries[] = {
     {nullptr}
 };
 
-// 定時間隔秒數
-gint64 interval_seconds = 60;
-// 連接超時秒數
-gint64 connect_timeout_seconds = 5;
-// Redis 連接地址
-gchar* redis_host = nullptr;
-// Redis 連接端口
-gint redis_port = 0;
-// Redis 用戶名
-gchar* redis_username = nullptr;
-// Redis 密碼
-gchar* redis_password = nullptr;
+
+/**
+ * 重啓 Docker 容器
+ */
+void restart_docker_container()
+{
+    // TODO - 這裡應該重啓 Docker 容器
+}
+
 
 /**
  * 定时器回调函数
@@ -41,8 +40,8 @@ void timer_callback(const evutil_socket_t fd, const short event, void* arg)
     g_print("Timer callback called.\n");
 
     // 建立 Redis 連接
-    const struct timeval timeout = {connect_timeout_seconds, 0};
-    const auto c = redisConnectWithTimeout(redis_host, redis_port, timeout);
+    const struct timeval timeout = {r_config->connect_timeout_seconds, 0};
+    const auto c = redisConnectWithTimeout(r_config->redis_host, r_config->redis_port, timeout);
 
     // 如果連接失敗，則輸出錯誤信息
     if (c == nullptr || c->err)
@@ -59,7 +58,7 @@ void timer_callback(const evutil_socket_t fd, const short event, void* arg)
     }
 
     // 發送 AUTH 指令
-    redisReply* reply = redisCommand(c, "AUTH %s %s", redis_username, redis_password);
+    redisReply* reply = redisCommand(c, "AUTH %s %s", r_config->redis_username, r_config->redis_password);
     if (reply == nullptr)
     {
         printf("Sending AUTH failed, the connection may have been reset or Redis hangs\n");
@@ -86,9 +85,6 @@ void timer_callback(const evutil_socket_t fd, const short event, void* arg)
         printf("Redis responds to exceptions: type=%d, str=%s\n", reply->type, reply->str);
     }
 
-    // 清理
-    freeReplyObject(reply);
-
     g_printf("Redis connection success\n");
 
 finish:
@@ -103,7 +99,7 @@ finish:
     }
 
     const auto ev = (struct event*)arg;
-    const struct timeval interval = {interval_seconds, 0};
+    const struct timeval interval = {r_config->interval_seconds, 0};
     evtimer_add(ev, &interval);
 }
 
@@ -122,7 +118,7 @@ int run_loop()
     }
 
     // 定义定时器事件
-    const struct timeval interval = {interval_seconds, 0};
+    const struct timeval interval = {r_config->interval_seconds, 0};
 
     // 創建定時器事件
     struct event* timer_event = evtimer_new(base, timer_callback, event_self_cbarg());
@@ -135,7 +131,7 @@ int run_loop()
 
     // 启动定时器
     evtimer_add(timer_event, &interval);
-    g_print("Timer started with interval %ld seconds.\n", interval_seconds);
+    g_print("Timer started with interval %ld seconds.\n", r_config->interval_seconds);
 
     // 运行事件循环
     event_base_dispatch(base);
@@ -176,7 +172,7 @@ void init_global_params(int argc, char* argv[])
     if (!g_option_context_parse(context, &argc, &argv, &error))
     {
         g_print("Option parsing failed: %s\n", error->message);
-        g_error_free(error);
+        if (error != nullptr) g_error_free(error);;
         exit(1);
     }
 
@@ -205,79 +201,31 @@ void read_config()
     if (!g_key_file_load_from_file(keyfile, config_file, G_KEY_FILE_NONE, &error))
     {
         g_printerr("Error loading config file: %s\n", error->message);
-        g_error_free(error);
-        exit(1);
+        goto error;
     }
 
-    // 讀取檢查間隔秒數
-    error = nullptr;
-    interval_seconds = g_key_file_get_integer(keyfile, "General", "interval", &error);
-    // 如果讀取失敗，則使用默認值
-    if (error != nullptr)
-    {
-        g_printerr("Error reading interval: %s\n", error->message);
-        g_error_free(error);
-        interval_seconds = 60;
-    }
+    // 讀取 Redis 配置
+    if (!init_redis_config(keyfile, error)) goto error;
 
-    // 讀取連接超時秒數
-    error = nullptr;
-    connect_timeout_seconds = g_key_file_get_integer(keyfile, "General", "connect_timeout", &error);
-    // 如果讀取失敗，則使用默認值
-    if (error != nullptr)
-    {
-        g_printerr("Error reading connect_timeout: %s\n", error->message);
-        g_error_free(error);
-        connect_timeout_seconds = 5;
-    }
+    // 讀取 Email 配置
+    if (!init_email_config(keyfile, error)) goto error;
 
-    // 讀取redis連接地址
-    error = nullptr;
-    redis_host = g_key_file_get_string(keyfile, "General", "redis_host", &error);
-    // 如果讀取失敗，則退出程序
-    if (error != nullptr)
-    {
-        g_printerr("Error reading redis_host: %s\n", error->message);
-        g_error_free(error);
-        g_key_file_free(keyfile);
-        exit(1);
-    }
+    goto success;
 
-    // 讀取redis連接端口
-    error = nullptr;
-    redis_port = g_key_file_get_integer(keyfile, "General", "redis_port", &error);
-    // 如果讀取失敗，則使用默認值
-    if (error != nullptr)
-    {
-        g_printerr("Error reading redis_port: %s\n", error->message);
-        g_error_free(error);
-        redis_port = 6379;
-    }
+error:
+    // 釋放 redis 配置
+    destroy_redis_config();
+    // 釋放 email 配置
+    destroy_email_config();
+    // 釋放 配置文件
+    if (error != nullptr) g_error_free(error);;
+    g_key_file_free(keyfile);
+    // 退出程序
+    exit(1);
 
-    // 讀取redis用戶名
-    error = nullptr;
-    redis_username = g_key_file_get_string(keyfile, "General", "redis_username", &error);
-    // 如果讀取失敗，則退出程序
-    if (error != nullptr)
-    {
-        g_printerr("Error reading redis_username: %s\n", error->message);
-        g_error_free(error);
-        g_key_file_free(keyfile);
-        exit(1);
-    }
-
-    // 讀取redis密碼
-    error = nullptr;
-    redis_password = g_key_file_get_string(keyfile, "General", "redis_password", &error);
-    // 如果讀取失敗，則退出程序
-    if (error != nullptr)
-    {
-        g_printerr("Error reading redis_password: %s\n", error->message);
-        g_error_free(error);
-        g_key_file_free(keyfile);
-        exit(1);
-    }
-
+success:
+    // 釋放 配置文件
+    if (error != nullptr) g_error_free(error);;
     g_key_file_free(keyfile);
 }
 
@@ -292,8 +240,9 @@ int main(int argc, char* argv[])
     const int res = run_loop();
     // 釋放資源
     g_free(config_file);
-    g_free(redis_host);
-    g_free(redis_username);
-    g_free(redis_password);
+    // 釋放redis配置
+    destroy_redis_config();
+    // 釋放 email 配置
+    destroy_email_config();
     return res;
 }
