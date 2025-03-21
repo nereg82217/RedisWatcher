@@ -17,6 +17,9 @@ include_directories(${LIBEVENT_INCLUDE_DIRS})
 find_library(HIREDIS_LIB hiredis)
 include_directories(/usr/include/hiredis)
 
+# 查找 Curl
+find_package(CURL REQUIRED)
+
 # 查找源文件
 file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.c")
 
@@ -28,4 +31,5 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         ${GLIB_LIBRARIES}
         ${LIBEVENT_LIBRARIES}
         ${HIREDIS_LIB}
+        CURL::libcurl
 )

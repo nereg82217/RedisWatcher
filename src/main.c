@@ -4,6 +4,7 @@
 #include <event2/util.h>
 #include <unistd.h>
 #include <hiredis/hiredis.h>
+#include <curl/curl.h>
 
 // 配置文件路徑
 gchar* config_file = nullptr;
@@ -22,6 +23,10 @@ gint64 connect_timeout_seconds = 5;
 gchar* redis_host = nullptr;
 // Redis 連接端口
 gint redis_port = 0;
+// Redis 用戶名
+gchar* redis_username = nullptr;
+// Redis 密碼
+gchar* redis_password = nullptr;
 
 /**
  * 定时器回调函数
@@ -37,7 +42,7 @@ void timer_callback(const evutil_socket_t fd, const short event, void* arg)
 
     // 建立 Redis 連接
     const struct timeval timeout = {connect_timeout_seconds, 0};
-    redisContext* c = redisConnectWithTimeout(redis_host, redis_port, timeout);
+    const auto c = redisConnectWithTimeout(redis_host, redis_port, timeout);
 
     // 如果連接失敗，則輸出錯誤信息
     if (c == nullptr || c->err)
@@ -53,9 +58,49 @@ void timer_callback(const evutil_socket_t fd, const short event, void* arg)
         }
     }
 
+    // 發送 AUTH 指令
+    redisReply* reply = redisCommand(c, "AUTH %s %s", redis_username, redis_password);
+    if (reply == nullptr)
+    {
+        printf("Sending AUTH failed, the connection may have been reset or Redis hangs\n");
+        goto finish;
+    }
+    // 清理
+    freeReplyObject(reply);
+
+    // 發送 PING 指令
+    reply = redisCommand(c, "PING");
+    if (reply == nullptr)
+    {
+        printf("Sending PING failed, the connection may have been reset or Redis hangs\n");
+        goto finish;
+    }
+
+    // 檢查回應
+    if (reply->type == REDIS_REPLY_STATUS && strcmp(reply->str, "PONG") == 0)
+    {
+        printf("Redis Respond to PING: %s\n", reply->str);
+    }
+    else
+    {
+        printf("Redis responds to exceptions: type=%d, str=%s\n", reply->type, reply->str);
+    }
+
+    // 清理
+    freeReplyObject(reply);
+
     g_printf("Redis connection success\n");
-    // 釋放 Redis 連接
-    redisFree(c);
+
+finish:
+
+    if (reply)
+    {
+        freeReplyObject(reply);
+    }
+    if (c)
+    {
+        redisFree(c);
+    }
 
     const auto ev = (struct event*)arg;
     const struct timeval interval = {interval_seconds, 0};
@@ -209,6 +254,30 @@ void read_config()
         redis_port = 6379;
     }
 
+    // 讀取redis用戶名
+    error = nullptr;
+    redis_username = g_key_file_get_string(keyfile, "General", "redis_username", &error);
+    // 如果讀取失敗，則退出程序
+    if (error != nullptr)
+    {
+        g_printerr("Error reading redis_username: %s\n", error->message);
+        g_error_free(error);
+        g_key_file_free(keyfile);
+        exit(1);
+    }
+
+    // 讀取redis密碼
+    error = nullptr;
+    redis_password = g_key_file_get_string(keyfile, "General", "redis_password", &error);
+    // 如果讀取失敗，則退出程序
+    if (error != nullptr)
+    {
+        g_printerr("Error reading redis_password: %s\n", error->message);
+        g_error_free(error);
+        g_key_file_free(keyfile);
+        exit(1);
+    }
+
     g_key_file_free(keyfile);
 }
 
@@ -224,5 +293,7 @@ int main(int argc, char* argv[])
     // 釋放資源
     g_free(config_file);
     g_free(redis_host);
+    g_free(redis_username);
+    g_free(redis_password);
     return res;
 }
