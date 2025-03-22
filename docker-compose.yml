@@ -1,0 +1,16 @@
+services:
+
+  redis-watcher:
+    image: ccsssng/redis-watcher:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # 用于管理 Docker 容器
+      - /home/apps/RedisWatcher/config.ini:/opt/RedisWatcher/config.ini  # 绑定自定义环境变量目录
+    command: /opt/redis-watcher/bin/RedisWatcher -c /opt/RedisWatcher/config.ini
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    driver: overlay
+    external: true
+    name: shared_net
