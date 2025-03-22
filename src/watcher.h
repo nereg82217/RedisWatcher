@@ -15,6 +15,12 @@ gboolean init_watcher_config(GKeyFile* keyfile, GError* error);
 void destroy_watcher_config();
 
 /**
+ * 獲取服務版本
+ * @param service_id 服務ID
+ */
+guint64 get_services_version(const gchar* service_id);
+
+/**
  * 重啓 Docker 容器
  */
 void restart_docker_container(const gchar* service_id);

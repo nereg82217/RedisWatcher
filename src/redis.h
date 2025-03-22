@@ -26,6 +26,8 @@ typedef struct redis_config
     gchar* redis_username;
     // Redis 密碼
     gchar* redis_password;
+    // 是否認證
+    gboolean auth;
 } redis_config;
 
 typedef redis_config* redis_config_t;

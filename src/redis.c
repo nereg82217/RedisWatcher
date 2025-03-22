@@ -52,6 +52,21 @@ gboolean init_redis_config(GKeyFile* keyfile, GError* error)
         goto error;
     }
 
+    // 讀取redis是否認證
+    error = nullptr;
+    r_config->auth = g_key_file_get_boolean(keyfile, "General", "redis_auth", &error);
+    if (error != nullptr)
+    {
+        g_printerr("Error reading redis_auth: %s\n", error->message);
+        goto error;
+    }
+
+    // 如果不需要認證
+    if (!r_config->auth)
+    {
+        return TRUE;
+    }
+
     // 讀取redis用戶名
     error = nullptr;
     r_config->redis_username = g_key_file_get_string(keyfile, "General", "redis_username", &error);

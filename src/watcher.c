@@ -67,28 +67,26 @@ void destroy_watcher_config()
     }
 }
 
-/**
- * 重啓 Docker 容器
- */
-void restart_docker_container(const gchar* service_id)
+// 寫入 callback：將回傳的資料塞入 string
+static size_t write_callback(void* contents, size_t size, size_t nmemb, void* userp)
 {
+    const size_t realsize = size * nmemb;
+    const auto mem = (GString*)userp;
+    g_string_append_len(mem, (const gchar*)contents, realsize);
+    return realsize;
+}
+
+/**
+ * 獲取服務版本
+ * @param service_id 服務ID
+ */
+guint64 get_services_version(const gchar* service_id)
+{
+    // 服務版本
+    guint64 index = 0;
+
     // 建立更新服務的 URL
-    auto url = g_strdup_printf("http://localhost/services/%s/update?version=latest", service_id);
-
-    // 使用 jansson 建立 JSON 主體 {"TaskTemplate": {"ForceUpdate": 1}}
-    json_t* root = json_object();
-    json_t* task_template = json_object();
-    json_object_set(task_template, "ForceUpdate", json_integer(1));
-    json_object_set(root, "TaskTemplate", task_template);
-
-    // 將 JSON 物件轉換成字串
-    char* json_data = json_dumps(root, 0);
-    if (!json_data)
-    {
-        g_printerr("Failed to dump JSON data\n");
-        json_decref(root);
-        return;
-    }
+    auto url = g_strdup_printf("http://localhost/services/%s", service_id);
 
     // 初始化CURL
     const auto curl = curl_easy_init();
@@ -96,41 +94,190 @@ void restart_docker_container(const gchar* service_id)
     if (curl == nullptr)
     {
         g_printerr("Failed to initialize CURL\n");
-        free(json_data);
-        json_decref(root);
-        return;
+        g_free(url);
+        return index;
     }
 
-    // 設定使用 Docker 的 Unix socket
+    // 定義響應數據
+    GString* response = g_string_new("");
+
     curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, docker_socket);
     curl_easy_setopt(curl, CURLOPT_URL, url);
-
-    // 使用 POST 方法，並設定 JSON 主體
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_data);
-
-    // 設定 HTTP Header
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
 
     // 執行請求
     const CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK)
     {
         fprintf(stderr, "curl_easy_perform() 失敗: %s\n", curl_easy_strerror(res));
-        curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
-        free(json_data);
-        json_decref(root);
-        return;
+        g_string_free(response, TRUE);
+        g_free(url);
+        return index;
+    }
+
+    // 使用 jansson 解析 JSON
+    json_error_t error;
+    json_t* root = json_loads(response->str, 0, &error);
+    if (!root)
+    {
+        g_printerr("JSON parse error: on line %d: %s\n", error.line, error.text);
+    }
+    else
+    {
+        const json_t* version_obj = json_object_get(root, "Version");
+        if (version_obj && json_is_object(version_obj))
+        {
+            json_t* index_obj = json_object_get(version_obj, "Index");
+            if (index_obj && json_is_integer(index_obj))
+            {
+                index = json_integer_value(index_obj);
+            }
+            else
+            {
+                g_printerr("Index not found or not an integer\n");
+            }
+        }
+        else
+        {
+            g_printerr("Version object not found or not valid\n");
+        }
+
+        json_decref(root); // Free JSON root object
     }
 
     // 清理資源
-    curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    free(json_data);
+    g_free(url);
+
+    return index;
+}
+
+/**
+ * 重啓 Docker 容器
+ */
+void restart_docker_container(const gchar* service_id)
+{
+    // 初始化CURL
+    CURL* curl = curl_easy_init();
+    if (!curl)
+    {
+        g_printerr("Failed to initialize CURL\n");
+        return;
+    }
+
+    // 獲取服務詳情的 URL
+    auto url = g_strdup_printf("http://localhost/services/%s", service_id);
+
+    // 定義響應數據
+    GString* response = g_string_new("");
+
+    curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, docker_socket);
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+
+    // 執行請求
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK)
+    {
+        g_printerr("GET failed: %s\n", curl_easy_strerror(res));
+        goto cleanup;
+    }
+
+    // Step 2: 解析 JSON
+    json_error_t error;
+    json_t* root = json_loads(response->str, 0, &error);
+    if (!root)
+    {
+        g_printerr("JSON parse error: %s (line %d)\n", error.text, error.line);
+        goto cleanup;
+    }
+
+    // 取出 version
+    const json_t* version_obj = json_object_get(root, "Version");
+    const json_t* index_obj = json_object_get(version_obj, "Index");
+    if (!json_is_integer(index_obj))
+    {
+        g_printerr("Invalid version index\n");
+        json_decref(root);
+        goto cleanup;
+    }
+    guint64 version_index = json_integer_value(index_obj);
+
+    // 取出 Spec
+    json_t* spec_obj = json_object_get(root, "Spec");
+    if (!json_is_object(spec_obj))
+    {
+        g_printerr("Missing Spec object\n");
+        json_decref(root);
+        goto cleanup;
+    }
+
+    // 複製 Spec 出來（防止改到原本的 root）
+    json_t* spec_copy = json_deep_copy(spec_obj);
+
+    // 加 ForceUpdate += 1
+    json_t* task_template = json_object_get(spec_copy, "TaskTemplate");
+    if (!task_template || !json_is_object(task_template))
+    {
+        g_printerr("Missing TaskTemplate\n");
+        json_decref(spec_copy);
+        json_decref(root);
+        goto cleanup;
+    }
+
+    const json_t* force_update_obj = json_object_get(task_template, "ForceUpdate");
+    json_int_t force_update = 0;
+    if (force_update_obj && json_is_integer(force_update_obj))
+    {
+        force_update = json_integer_value(force_update_obj);
+    }
+    json_object_set(task_template, "ForceUpdate", json_integer(force_update + 1));
+
+    // Step 3: 發送 POST /services/<id>/update?version=<version_index>
+    // 建立更新服務的 URL
+    g_free(url);
+    url = g_strdup_printf("http://localhost/services/%s/update?version=%lu", service_id, version_index);
+
+    // 將 JSON 轉換為字符串
+    char* json_payload = json_dumps(spec_copy, JSON_COMPACT);
+
+    // 重置CURL
+    curl_easy_reset(curl);
+    // 設定使用 Docker 的 Unix socket
+    curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, docker_socket);
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    // 使用 POST 方法，並設定 JSON 主體
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_payload);
+    // 設定 HTTP Header
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    // 執行請求
+    res = curl_easy_perform(curl);
+    if (res != CURLE_OK)
+    {
+        g_printerr("Service update failed: %s\n", curl_easy_strerror(res));
+    }
+    else
+    {
+        g_print("Service '%s' restarted successfully.\n", service_id);
+    }
+
+    // 清理
+    curl_slist_free_all(headers);
+    free(json_payload);
+    json_decref(spec_copy);
     json_decref(root);
+
+cleanup:
+    curl_easy_cleanup(curl);
+    g_string_free(response, TRUE);
+    g_free(url);
 }
 
 /**
@@ -181,15 +328,22 @@ void timer_callback(const evutil_socket_t fd, const short event, void* arg)
         error_ongoing = FALSE;
     }
 
-    // 發送 AUTH 指令
-    redisReply* reply = redisCommand(c, "AUTH %s %s", r_config->redis_username, r_config->redis_password);
-    if (reply == nullptr)
+    redisReply* reply = nullptr;
+
+    // 如果需要驗證，發送 AUTH 指令
+    if (r_config->auth)
     {
-        printf("Sending AUTH failed, the connection may have been reset or Redis hangs\n");
-        goto finish;
+        reply = redisCommand(c, "AUTH %s %s", r_config->redis_username, r_config->redis_password);
+        if (reply == nullptr)
+        {
+            printf("Sending AUTH failed, the connection may have been reset or Redis hangs\n");
+            goto finish;
+        }
+        // 清理
+        freeReplyObject(reply);
+        reply = nullptr;
     }
-    // 清理
-    freeReplyObject(reply);
+
 
     // 發送 PING 指令
     reply = redisCommand(c, "PING");
@@ -208,6 +362,10 @@ void timer_callback(const evutil_socket_t fd, const short event, void* arg)
     {
         printf("Redis responds to exceptions: type=%d, str=%s\n", reply->type, reply->str);
     }
+
+    // 清理
+    freeReplyObject(reply);
+    reply = nullptr;
 
     g_printf("Redis connection success\n");
 
