@@ -40,3 +40,6 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         ${JANSSON_LIBRARIES}
         CURL::libcurl
 )
+
+# 安装
+install(TARGETS ${CMAKE_PROJECT_NAME} DESTINATION /opt/redis-watcher/bin)
