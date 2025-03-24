@@ -3,6 +3,7 @@
 #include "redis.h"
 #include "email.h"
 #include "watcher.h"
+#include "sms.h"
 
 // 配置文件路徑
 gchar* config_file = nullptr;
@@ -84,6 +85,9 @@ void read_config()
     // 讀取 Watcher 配置
     if (!init_watcher_config(keyfile, error)) goto error;
 
+    // 讀取 Sms 配置
+    if (!init_sms_config(keyfile, error)) goto error;
+
     goto success;
 
 error:
@@ -93,6 +97,8 @@ error:
     destroy_email_config();
     // 釋放 watcher 配置
     destroy_watcher_config();
+    // 釋放 sms 配置
+    destroy_sms_config();
     // 釋放 配置文件
     if (error != nullptr) g_error_free(error);;
     g_key_file_free(keyfile);
@@ -122,5 +128,7 @@ int main(int argc, char* argv[])
     destroy_email_config();
     // 釋放 watcher 配置
     destroy_watcher_config();
+    // 釋放 sms 配置
+    destroy_sms_config();
     return res;
 }

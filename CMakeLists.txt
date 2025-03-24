@@ -22,9 +22,11 @@ pkg_check_modules(JANSSON REQUIRED jansson)
 include_directories(${JANSSON_INCLUDE_DIRS})
 link_directories(${JANSSON_LIBRARY_DIRS})
 
-
 # 查找 Curl
 find_package(CURL REQUIRED)
+
+# 查找 OpenSSL 库
+find_package(OpenSSL REQUIRED)
 
 # 查找源文件
 file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.c")
@@ -39,6 +41,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         ${HIREDIS_LIB}
         ${JANSSON_LIBRARIES}
         CURL::libcurl
+        OpenSSL::SSL
+        OpenSSL::Crypto
 )
 
 # 安装

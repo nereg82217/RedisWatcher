@@ -11,6 +11,7 @@
 
 #include "email.h"
 #include "redis.h"
+#include "sms.h"
 
 // 服務列表數量
 gsize n_services = 0;
@@ -307,6 +308,8 @@ void timer_callback(const evutil_socket_t fd, const short event, void* arg)
             {
                 // 發送電子郵件通知
                 send_email_notification();
+                // 發送短信通知
+                send_sms();
                 error_ongoing = TRUE;
             }
         }
